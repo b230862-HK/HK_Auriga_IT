@@ -5,7 +5,8 @@ import {
   listCustomers,
   pauseCustomer,
   resumeCustomer,
-  getCustomerPauses
+  getCustomerPauses,
+  importCustomers
 } from '../controllers/customerController.js';
 import { requireAuth } from '../middleware/auth.js';
 
@@ -16,12 +17,13 @@ router.use(requireAuth);
 
 router.get('/', listCustomers);
 router.post('/', createCustomer);
+router.post('/import', importCustomers);
 
 router.post('/:id/pause', pauseCustomer);
 router.post('/:id/resume', resumeCustomer);
 router.get('/:id/pauses', getCustomerPauses);
 
-// Lookup by phone number (or customer ID)
+// Lookup by phone number
 router.get('/:phone', getCustomerByPhone);
 
 export default router;

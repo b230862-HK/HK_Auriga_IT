@@ -40,6 +40,29 @@ export const customerService = {
     const res = await api.get(`/customers/${id}/pauses`);
     return res.data;
   },
+  importCustomers: async (rows) => {
+    const res = await api.post('/customers/import', rows);
+    return res.data;
+  },
+};
+
+export const subscriptionService = {
+  getSubscription: async (id) => {
+    const res = await api.get(`/subscriptions/${id}`);
+    return res.data;
+  },
+  transferSubscription: async (id, transferData) => {
+    const res = await api.post(`/subscriptions/${id}/transfer`, transferData);
+    return res.data;
+  },
+  pauseSubscription: async (id, pauseData) => {
+    const res = await api.post(`/subscriptions/${id}/pause`, pauseData);
+    return res.data;
+  },
+  resumeSubscription: async (id) => {
+    const res = await api.post(`/subscriptions/${id}/resume`);
+    return res.data;
+  },
 };
 
 export const planService = {
@@ -55,7 +78,7 @@ export const planService = {
 
 export const billingService = {
   generateBills: async (month) => {
-    const res = await api.post('/billing/generate', null, { params: { month } });
+    const res = await api.post('/billing/generate', {}, { params: { month } });
     return res.data;
   },
   getMonthlyBills: async (month) => {
@@ -64,6 +87,23 @@ export const billingService = {
   },
   getCustomerBill: async (customerId, month) => {
     const res = await api.get(`/billing/${customerId}`, { params: { month } });
+    return res.data;
+  },
+};
+
+export const clockService = {
+  advanceClock: async (date) => {
+    const body = date ? { date } : {};
+    const res = await api.post('/clock', body);
+    return res.data;
+  },
+  getOutbox: async (date) => {
+    const params = date ? { date } : {};
+    const res = await api.get('/outbox', { params });
+    return res.data;
+  },
+  resetOutbox: async () => {
+    const res = await api.post('/outbox/reset');
     return res.data;
   },
 };

@@ -13,14 +13,13 @@ import {
   ChevronRight,
   Info,
   Loader2,
-  DollarSign,
+  ArrowRightLeft,
   Users
 } from 'lucide-react';
 
 export default function BillingPage() {
   const { showToast } = useAuth();
 
-  // Current month string e.g. "2026-09"
   const defaultMonth = new Date().toISOString().slice(0, 7);
   const [selectedMonth, setSelectedMonth] = useState(defaultMonth);
 
@@ -75,7 +74,6 @@ export default function BillingPage() {
     setExpandedBillId(expandedBillId === billId ? null : billId);
   };
 
-  // Month options for quick pick (past 3 months + next 2 months)
   const generateMonthOptions = () => {
     const options = [];
     const now = new Date();
@@ -99,11 +97,11 @@ export default function BillingPage() {
             Monthly Pro-Rated Billing
           </h1>
           <p className="text-sm text-warm-600 mt-1">
-            Airtight billing engine: plan price divided across actual delivery days, billed only for days served.
+            Airtight billing engine: plan price divided across actual delivery days, including mid-cycle transfer splits.
           </p>
         </div>
 
-        {/* Controls: Month selector & Generate button */}
+        {/* Controls */}
         <div className="flex items-center gap-3">
           <div className="relative">
             <select
@@ -158,13 +156,13 @@ export default function BillingPage() {
 
           <div className="p-5 rounded-2xl bg-white border border-warm-200/80 shadow-soft">
             <span className="text-xs font-bold uppercase tracking-wider text-warm-500">
-              Customers Billed
+              Customer Invoices
             </span>
             <p className="text-2xl sm:text-3xl font-extrabold text-warm-900 font-display mt-2">
               {summary.customerCount}
             </p>
             <p className="text-xs text-warm-500 font-medium mt-1">
-              Active & paused subscribers in period
+              Line items (including split transfers)
             </p>
           </div>
 
@@ -238,7 +236,7 @@ export default function BillingPage() {
             <button
               onClick={handleGenerateBills}
               disabled={generating}
-              className="mt-4 px-4 py-2 rounded-xl bg-terracotta-600 text-white text-xs font-semibold hover:bg-terracotta-700 transition-colors shadow-2xs"
+              className="mt-4 px-4 py-2 rounded-xl bg-terracotta-600 text-white text-xs font-semibold hover:bg-terracotta-700 transition-colors shadow-2xs cursor-pointer"
             >
               Generate Bills Now
             </button>
@@ -262,7 +260,8 @@ export default function BillingPage() {
                 {bills.map((bill) => {
                   const isExpanded = expandedBillId === bill._id;
                   const customer = bill.customerId || {};
-                  const plan = customer.planId || {};
+                  const subscription = bill.subscriptionId || {};
+                  const plan = subscription.planId || {};
 
                   return (
                     <React.Fragment key={bill._id}>
@@ -272,9 +271,17 @@ export default function BillingPage() {
                       >
                         {/* Customer */}
                         <td className="py-4 px-6">
-                          <p className="font-bold text-warm-900 group-hover:text-terracotta-600 transition-colors">
-                            {customer.name || 'Unknown'}
-                          </p>
+                          <div className="flex items-center gap-2">
+                            <p className="font-bold text-warm-900 group-hover:text-terracotta-600 transition-colors">
+                              {customer.name || 'Unknown'}
+                            </p>
+                            {bill.isTransferred && (
+                              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200" title="Mid-cycle subscription transfer line item">
+                                <ArrowRightLeft className="w-2.5 h-2.5" />
+                                <span>Split Bill</span>
+                              </span>
+                            )}
+                          </div>
                           <p className="text-xs text-warm-500">{customer.phone}</p>
                         </td>
 
@@ -336,13 +343,20 @@ export default function BillingPage() {
                             <div className="bg-white p-5 rounded-2xl border border-warm-200 shadow-2xs space-y-4">
                               <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-warm-100 pb-3 gap-2">
                                 <div>
-                                  <h4 className="text-sm font-bold text-warm-900">
-                                    Billing Calculation Breakdown for {customer.name} ({bill.month})
-                                  </h4>
+                                  <div className="flex items-center gap-2">
+                                    <h4 className="text-sm font-bold text-warm-900">
+                                      Billing Breakdown for {customer.name} ({bill.month})
+                                    </h4>
+                                    {bill.isTransferred && (
+                                      <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-100 text-blue-800 rounded">
+                                        Transferred Mid-Cycle
+                                      </span>
+                                    )}
+                                  </div>
                                   <p className="text-xs text-warm-500">
-                                    Subscription start:{' '}
-                                    {customer.subscriptionStartDate
-                                      ? new Date(customer.subscriptionStartDate).toLocaleDateString()
+                                    Slot started:{' '}
+                                    {subscription.cycleStartDate
+                                      ? new Date(subscription.cycleStartDate).toLocaleDateString()
                                       : 'N/A'}
                                   </p>
                                 </div>
@@ -353,8 +367,8 @@ export default function BillingPage() {
 
                               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
                                 <div>
-                                  <p className="font-bold text-amber-800 mb-1 flex items-center gap-1.5">
-                                    <span>Paused Weekdays Deducted ({bill.details?.pausedDates?.length || bill.pausedWeekdays}):</span>
+                                  <p className="font-bold text-amber-800 mb-1">
+                                    Paused Weekdays Deducted ({bill.details?.pausedDates?.length || bill.pausedWeekdays}):
                                   </p>
                                   {bill.details?.pausedDates?.length > 0 ? (
                                     <div className="flex flex-wrap gap-1.5 mt-1">
@@ -368,7 +382,7 @@ export default function BillingPage() {
                                       ))}
                                     </div>
                                   ) : (
-                                    <p className="text-warm-400 italic">None. Customer was not paused during this period.</p>
+                                    <p className="text-warm-400 italic">None. No pauses during this owner's window.</p>
                                   )}
                                 </div>
 

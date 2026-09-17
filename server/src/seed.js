@@ -1,6 +1,7 @@
 import { Plan } from './models/Plan.js';
 import { Owner } from './models/Owner.js';
 import { Customer } from './models/Customer.js';
+import { Subscription } from './models/Subscription.js';
 import { PauseRecord } from './models/PauseRecord.js';
 import { Bill } from './models/Bill.js';
 import { connectDB, disconnectDB } from './config/db.js';
@@ -34,12 +35,11 @@ export async function seedInitialData() {
       plans = await Plan.find();
     }
 
-    // Check if an owner exists, else seed demo owner
+    // Demo owner account
     const ownerCount = await Owner.countDocuments();
-    let demoOwner;
     if (ownerCount === 0) {
       console.log('[Seed] Seeding demo owner account...');
-      demoOwner = await Owner.create({
+      await Owner.create({
         name: 'Sunita Sharma',
         email: 'owner@tiffin.com',
         password: 'password123',
@@ -48,10 +48,10 @@ export async function seedInitialData() {
       console.log('[Seed] Demo owner created (owner@tiffin.com / password123)');
     }
 
-    // Check if sample customers exist, else seed realistic customers to showcase active, paused, and billing
-    const customerCount = await Customer.countDocuments();
-    if (customerCount === 0 && plans.length > 0) {
-      console.log('[Seed] Seeding sample customers and pause records...');
+    // Seed sample customers & subscriptions
+    const subCount = await Subscription.countDocuments();
+    if (subCount === 0 && plans.length > 0) {
+      console.log('[Seed] Seeding sample customers, subscriptions, and pause records...');
       const plan1 = plans[0]._id;
       const plan2 = plans[1]._id;
 
@@ -59,35 +59,45 @@ export async function seedInitialData() {
       const cust1 = await Customer.create({
         name: 'Rahul Joshi',
         phone: '9876543210',
-        address: 'B-304, Green Heights, Tech Park Road',
+        address: 'B-304, Green Heights, Tech Park Road'
+      });
+      await Subscription.create({
         planId: plan1,
-        subscriptionStartDate: new Date('2026-08-01'),
-        status: 'active'
+        cycleStartDate: new Date('2026-08-01'),
+        status: 'active',
+        currentCustomerId: cust1._id,
+        ownershipHistory: [{ customerId: cust1._id, from: new Date('2026-08-01'), to: null }]
       });
 
       // 2. Active customer who joined mid-month
       const cust2 = await Customer.create({
         name: 'Pooja Verma',
         phone: '9823456789',
-        address: 'Flat 12, Sunrise Residency, Sector 15',
+        address: 'Flat 12, Sunrise Residency, Sector 15'
+      });
+      await Subscription.create({
         planId: plan1,
-        subscriptionStartDate: new Date('2026-09-14'),
-        status: 'active'
+        cycleStartDate: new Date('2026-09-14'),
+        status: 'active',
+        currentCustomerId: cust2._id,
+        ownershipHistory: [{ customerId: cust2._id, from: new Date('2026-09-14'), to: null }]
       });
 
       // 3. Paused customer currently on vacation
       const cust3 = await Customer.create({
         name: 'Amit Patel',
         phone: '9812345678',
-        address: 'Villa 7, Palm Meadows',
-        planId: plan2,
-        subscriptionStartDate: new Date('2026-07-01'),
-        status: 'paused'
+        address: 'Villa 7, Palm Meadows'
       });
-
-      // Add active pause for Amit Patel
+      const sub3 = await Subscription.create({
+        planId: plan2,
+        cycleStartDate: new Date('2026-07-01'),
+        status: 'paused',
+        currentCustomerId: cust3._id,
+        ownershipHistory: [{ customerId: cust3._id, from: new Date('2026-07-01'), to: null }]
+      });
       await PauseRecord.create({
-        customerId: cust3._id,
+        subscriptionId: sub3._id,
         startDate: new Date('2026-09-15'),
         endDate: new Date('2026-09-22'),
         isResumed: false,
@@ -98,15 +108,17 @@ export async function seedInitialData() {
       const cust4 = await Customer.create({
         name: 'Sneha Rao',
         phone: '9890123456',
-        address: 'Tower 4, 1102, Skyline Towers',
-        planId: plan1,
-        subscriptionStartDate: new Date('2026-06-01'),
-        status: 'active'
+        address: 'Tower 4, 1102, Skyline Towers'
       });
-
-      // Completed pause for Sneha
+      const sub4 = await Subscription.create({
+        planId: plan1,
+        cycleStartDate: new Date('2026-06-01'),
+        status: 'active',
+        currentCustomerId: cust4._id,
+        ownershipHistory: [{ customerId: cust4._id, from: new Date('2026-06-01'), to: null }]
+      });
       await PauseRecord.create({
-        customerId: cust4._id,
+        subscriptionId: sub4._id,
         startDate: new Date('2026-09-07'),
         endDate: new Date('2026-09-11'),
         isResumed: true,
@@ -118,28 +130,52 @@ export async function seedInitialData() {
       const cust5 = await Customer.create({
         name: 'Vikram Mehta',
         phone: '9834567890',
-        address: 'C-501, Silver Crest Apartments',
-        planId: plan2,
-        subscriptionStartDate: new Date('2026-05-15'),
-        status: 'paused'
+        address: 'C-501, Silver Crest Apartments'
       });
-
+      const sub5 = await Subscription.create({
+        planId: plan2,
+        cycleStartDate: new Date('2026-05-15'),
+        status: 'paused',
+        currentCustomerId: cust5._id,
+        ownershipHistory: [{ customerId: cust5._id, from: new Date('2026-05-15'), to: null }]
+      });
       await PauseRecord.create({
-        customerId: cust5._id,
+        subscriptionId: sub5._id,
         startDate: new Date('2026-09-18'),
         endDate: null,
         isResumed: false,
         reason: 'Work from home / medical rest'
       });
 
-      console.log('[Seed] Sample customers and pause records seeded successfully.');
+      // 6. Transferred subscription (demonstrating T6 mid-cycle transfer)
+      const custOutgoing = await Customer.create({
+        name: 'Ananya Gupta',
+        phone: '9855512345',
+        address: 'Sector 4, Flat 101'
+      });
+      const custIncoming = await Customer.create({
+        name: 'Karan Singh',
+        phone: '9866654321',
+        address: 'Sector 4, Flat 101 (Relocated Colleague)'
+      });
+      await Subscription.create({
+        planId: plan1,
+        cycleStartDate: new Date('2026-08-01'),
+        status: 'active',
+        currentCustomerId: custIncoming._id,
+        ownershipHistory: [
+          { customerId: custOutgoing._id, from: new Date('2026-08-01'), to: new Date('2026-09-15') },
+          { customerId: custIncoming._id, from: new Date('2026-09-16'), to: null }
+        ]
+      });
+
+      console.log('[Seed] Sample subscriptions and transferred records seeded successfully.');
     }
   } catch (err) {
     console.error('[Seed Error]:', err);
   }
 }
 
-// Allow running seed standalone: node src/seed.js
 if (process.argv[1] && process.argv[1].endsWith('seed.js')) {
   (async () => {
     await connectDB();

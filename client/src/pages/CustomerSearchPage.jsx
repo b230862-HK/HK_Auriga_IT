@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { customerService, billingService } from '../api/services.js';
 import PauseModal from '../components/PauseModal.jsx';
+import TransferModal from '../components/TransferModal.jsx';
 import {
   Search,
   Phone,
@@ -14,8 +15,9 @@ import {
   PlayCircle,
   AlertCircle,
   Receipt,
-  FileText,
-  Loader2
+  ArrowRightLeft,
+  Loader2,
+  History
 } from 'lucide-react';
 
 export default function CustomerSearchPage() {
@@ -28,8 +30,9 @@ export default function CustomerSearchPage() {
   const [currentBill, setCurrentBill] = useState(null);
   const [error, setError] = useState('');
 
-  // Pause Modal
-  const [modalOpen, setModalOpen] = useState(false);
+  // Modals
+  const [pauseModalOpen, setPauseModalOpen] = useState(false);
+  const [transferModalOpen, setTransferModalOpen] = useState(false);
 
   const currentMonthStr = new Date().toISOString().slice(0, 7);
 
@@ -48,7 +51,7 @@ export default function CustomerSearchPage() {
         setCustomerData(res);
         setSearchParams({ phone: target });
 
-        // Also fetch live bill preview for current month
+        // Fetch live bill preview for current month
         try {
           const billRes = await billingService.getCustomerBill(res.customer._id, currentMonthStr);
           if (billRes.success && billRes.bill) {
@@ -78,7 +81,9 @@ export default function CustomerSearchPage() {
   };
 
   const customer = customerData?.customer;
+  const subscription = customerData?.subscription;
   const pauses = customerData?.pauses || [];
+  const ownershipHistory = subscription?.ownershipHistory || customer?.ownershipHistory || [];
   const isActive = customer?.status === 'active';
   const isPaused = customer?.status === 'paused';
 
@@ -90,7 +95,7 @@ export default function CustomerSearchPage() {
           Customer Phone Lookup
         </h1>
         <p className="text-sm text-warm-600 mt-1">
-          Instant subscription lookup, live pause/resume management, and pause audit history.
+          Instant subscription lookup, pause/resume management, and mid-cycle ownership transfers.
         </p>
       </div>
 
@@ -170,7 +175,7 @@ export default function CustomerSearchPage() {
                     <span className="flex items-center gap-1">
                       <Calendar className="w-3.5 h-3.5 text-warm-400" />
                       <span>
-                        Subscribed since{' '}
+                        Cycle started{' '}
                         {new Date(customer.subscriptionStartDate).toLocaleDateString('en-IN', {
                           month: 'short',
                           day: 'numeric',
@@ -182,11 +187,11 @@ export default function CustomerSearchPage() {
                 </div>
               </div>
 
-              {/* Pause/Resume Action Button */}
-              <div>
+              {/* Action Buttons: Pause/Resume and Transfer */}
+              <div className="flex items-center gap-2.5">
                 <button
-                  onClick={() => setModalOpen(true)}
-                  className={`px-5 py-2.5 rounded-xl font-semibold text-sm shadow-soft transition-all duration-200 flex items-center gap-2 ${
+                  onClick={() => setPauseModalOpen(true)}
+                  className={`px-4 py-2.5 rounded-xl font-semibold text-xs sm:text-sm shadow-soft transition-all duration-200 flex items-center gap-1.5 cursor-pointer ${
                     isPaused
                       ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
                       : 'bg-amber-500 hover:bg-amber-600 text-white'
@@ -195,15 +200,25 @@ export default function CustomerSearchPage() {
                   {isPaused ? (
                     <>
                       <PlayCircle className="w-4 h-4" />
-                      <span>Resume Subscription</span>
+                      <span>Resume</span>
                     </>
                   ) : (
                     <>
                       <PauseCircle className="w-4 h-4" />
-                      <span>Pause Subscription</span>
+                      <span>Pause</span>
                     </>
                   )}
                 </button>
+
+                {subscription && (
+                  <button
+                    onClick={() => setTransferModalOpen(true)}
+                    className="px-4 py-2.5 rounded-xl font-semibold text-xs sm:text-sm bg-blue-600 hover:bg-blue-700 text-white shadow-soft transition-all duration-200 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <ArrowRightLeft className="w-4 h-4" />
+                    <span>Transfer Slot</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -266,6 +281,82 @@ export default function CustomerSearchPage() {
             </div>
           </div>
 
+          {/* Ownership History Timeline (if transferred) */}
+          {ownershipHistory.length > 1 && (
+            <div className="bg-white rounded-3xl border border-warm-200/80 shadow-soft p-6 sm:p-8">
+              <div className="flex items-center gap-2 mb-4">
+                <History className="w-5 h-5 text-blue-600" />
+                <h3 className="text-lg font-bold text-warm-900 font-display">
+                  Subscription Ownership History (Transfers)
+                </h3>
+                <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 text-blue-800">
+                  {ownershipHistory.length} owners
+                </span>
+              </div>
+              <div className="space-y-3">
+                {ownershipHistory.map((seg, idx) => {
+                  const isCurrent = seg.to === null;
+                  const ownerName = seg.customerId?.name || 'Customer';
+                  const ownerPhone = seg.customerId?.phone || '';
+                  const fromStr = new Date(seg.from).toLocaleDateString('en-IN', {
+                    day: 'numeric',
+                    month: 'short',
+                    year: 'numeric'
+                  });
+                  const toStr = seg.to
+                    ? new Date(seg.to).toLocaleDateString('en-IN', {
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric'
+                      })
+                    : 'Present';
+
+                  return (
+                    <div
+                      key={idx}
+                      className={`p-3.5 rounded-2xl border flex items-center justify-between text-xs ${
+                        isCurrent
+                          ? 'bg-blue-50/60 border-blue-200'
+                          : 'bg-warm-25 border-warm-200'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div
+                          className={`w-7 h-7 rounded-xl font-bold flex items-center justify-center text-xs ${
+                            isCurrent
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-warm-200 text-warm-700'
+                          }`}
+                        >
+                          #{idx + 1}
+                        </div>
+                        <div>
+                          <p className="font-bold text-warm-900">
+                            {ownerName} {ownerPhone && `(${ownerPhone})`}
+                          </p>
+                          <p className="text-[11px] text-warm-500">
+                            Effective: {fromStr} &rarr; {toStr}
+                          </p>
+                        </div>
+                      </div>
+                      <div>
+                        {isCurrent ? (
+                          <span className="px-2.5 py-0.5 rounded-full font-bold text-[10px] bg-blue-100 text-blue-800 border border-blue-300">
+                            Current Owner
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded font-medium text-[10px] text-warm-500 bg-warm-100">
+                            Previous Owner
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Pause History Timeline */}
           <div className="bg-white rounded-3xl border border-warm-200/80 shadow-soft p-6 sm:p-8">
             <div className="flex items-center justify-between mb-6">
@@ -282,9 +373,9 @@ export default function CustomerSearchPage() {
 
             {pauses.length === 0 ? (
               <div className="text-center py-8 text-warm-500">
-                <p className="text-xs">No pause records on file for this customer.</p>
+                <p className="text-xs">No pause records on file for this slot.</p>
                 <p className="text-[11px] text-warm-400 mt-0.5">
-                  When this customer pauses for travel, festivals, or leave, records will appear here.
+                  When deliveries are paused for travel, holidays, or leave, records will appear here.
                 </p>
               </div>
             ) : (
@@ -374,13 +465,24 @@ export default function CustomerSearchPage() {
         </div>
       )}
 
-      {/* Modal */}
+      {/* Pause/Resume Modal */}
       <PauseModal
         customer={customer}
-        isOpen={modalOpen}
-        onClose={() => setModalOpen(false)}
+        isOpen={pauseModalOpen}
+        onClose={() => setPauseModalOpen(false)}
         onSuccess={() => handleSearch(customer.phone)}
       />
+
+      {/* Transfer Modal */}
+      {subscription && (
+        <TransferModal
+          subscriptionId={subscription._id}
+          currentCustomerName={customer.name}
+          isOpen={transferModalOpen}
+          onClose={() => setTransferModalOpen(false)}
+          onSuccess={() => handleSearch(customer.phone)}
+        />
+      )}
     </div>
   );
 }

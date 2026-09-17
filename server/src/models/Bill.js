@@ -2,6 +2,12 @@ import mongoose from 'mongoose';
 
 const billSchema = new mongoose.Schema(
   {
+    subscriptionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Subscription',
+      required: [true, 'Subscription ID is required'],
+      index: true
+    },
     customerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Customer',
@@ -43,6 +49,10 @@ const billSchema = new mongoose.Schema(
       type: Date,
       default: Date.now
     },
+    isTransferred: {
+      type: Boolean,
+      default: false
+    },
     details: {
       type: mongoose.Schema.Types.Mixed,
       default: {}
@@ -53,7 +63,7 @@ const billSchema = new mongoose.Schema(
   }
 );
 
-// Compound index so a customer has at most one record per month, but can be updated on recomputation
-billSchema.index({ customerId: 1, month: 1 }, { unique: true });
+// Compound index so a customer has at most one bill per subscription per month
+billSchema.index({ subscriptionId: 1, customerId: 1, month: 1 }, { unique: true });
 
 export const Bill = mongoose.model('Bill', billSchema);

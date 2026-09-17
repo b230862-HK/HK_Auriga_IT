@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { customerService, billingService } from '../api/services.js';
 import StatCard from '../components/StatCard.jsx';
 import PauseModal from '../components/PauseModal.jsx';
+import ImportModal from '../components/ImportModal.jsx';
 import {
   Users,
   CheckCircle2,
@@ -16,7 +17,9 @@ import {
   Phone,
   MapPin,
   RefreshCw,
-  Loader2
+  Loader2,
+  Upload,
+  ArrowRightLeft
 } from 'lucide-react';
 
 export default function DashboardPage() {
@@ -25,14 +28,14 @@ export default function DashboardPage() {
   const [counts, setCounts] = useState({ active: 0, paused: 0, total: 0 });
   const [currentMonthBilled, setCurrentMonthBilled] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [statusFilter, setStatusFilter] = useState('all'); // all | active | paused
+  const [statusFilter, setStatusFilter] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
 
-  // Pause Modal state
+  // Modals state
   const [selectedCustomer, setSelectedCustomer] = useState(null);
-  const [modalOpen, setModalOpen] = useState(false);
+  const [pauseModalOpen, setPauseModalOpen] = useState(false);
+  const [importModalOpen, setImportModalOpen] = useState(false);
 
-  // Current month string e.g. "2026-09"
   const currentMonthStr = new Date().toISOString().slice(0, 7);
 
   const fetchDashboardData = async () => {
@@ -67,15 +70,15 @@ export default function DashboardPage() {
 
   const openPauseModal = (customer) => {
     setSelectedCustomer(customer);
-    setModalOpen(true);
+    setPauseModalOpen(true);
   };
 
   const filteredCustomers = customers.filter((c) => {
     const matchesStatus = statusFilter === 'all' || c.status === statusFilter;
     const matchesSearch =
       searchTerm.trim() === '' ||
-      c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      c.phone.includes(searchTerm.trim());
+      (c.name && c.name.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (c.phone && c.phone.includes(searchTerm.trim()));
     return matchesStatus && matchesSearch;
   });
 
@@ -88,22 +91,30 @@ export default function DashboardPage() {
             Kitchen Overview
           </h1>
           <p className="text-sm text-warm-600 mt-1">
-            Real-time daily delivery tracking, active/paused customer states, and billing status.
+            Real-time daily delivery tracking, subscription transfers, and pro-rated billing status.
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
           <button
             onClick={fetchDashboardData}
             title="Refresh dashboard stats"
-            className="p-2.5 rounded-xl border border-warm-200 text-warm-600 hover:text-warm-900 hover:bg-warm-100 transition-colors bg-white shadow-2xs"
+            className="p-2.5 rounded-xl border border-warm-200 text-warm-600 hover:text-warm-900 hover:bg-warm-100 transition-colors bg-white shadow-2xs cursor-pointer"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
 
+          <button
+            onClick={() => setImportModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-warm-100 hover:bg-warm-200 text-warm-800 font-semibold text-xs transition-colors border border-warm-300/60 shadow-2xs cursor-pointer"
+          >
+            <Upload className="w-3.5 h-3.5 text-warm-700" />
+            <span>Bulk Import</span>
+          </button>
+
           <Link
             to="/subscribe"
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-terracotta-600 hover:bg-terracotta-700 text-white font-semibold text-sm shadow-soft transition-all duration-200"
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-terracotta-600 hover:bg-terracotta-700 text-white font-semibold text-xs sm:text-sm shadow-soft transition-all duration-200"
           >
             <UserPlus className="w-4 h-4" />
             <span>New Subscriber</span>
@@ -111,7 +122,7 @@ export default function DashboardPage() {
 
           <Link
             to="/billing"
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-warm-100 hover:bg-warm-200 text-warm-800 font-semibold text-sm transition-colors border border-warm-300/60"
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-warm-100 hover:bg-warm-200 text-warm-800 font-semibold text-xs sm:text-sm transition-colors border border-warm-300/60"
           >
             <ReceiptText className="w-4 h-4 text-warm-700" />
             <span>Pro-Rated Bills</span>
@@ -131,14 +142,14 @@ export default function DashboardPage() {
         <StatCard
           title="Paused Subscriptions"
           value={counts.paused}
-          subtitle="Excluded from daily lunch & billing"
+          subtitle="Excluded from lunch & billing"
           icon={PauseCircle}
           color="amber"
         />
         <StatCard
           title="Total Subscribers"
           value={counts.total}
-          subtitle="Lifetime registered customers"
+          subtitle="Active slots & customers"
           icon={Users}
           color="blue"
         />
@@ -226,17 +237,8 @@ export default function DashboardPage() {
             <p className="text-xs text-warm-400 mt-1 max-w-xs mx-auto">
               {searchTerm || statusFilter !== 'all'
                 ? 'Try adjusting your search query or filter tab.'
-                : 'Get started by creating your first tiffin subscriber.'}
+                : 'Get started by creating your first tiffin subscriber or importing in bulk.'}
             </p>
-            {!searchTerm && statusFilter === 'all' && (
-              <Link
-                to="/subscribe"
-                className="inline-flex items-center gap-1.5 mt-4 px-4 py-2 rounded-xl bg-terracotta-600 text-white text-xs font-semibold hover:bg-terracotta-700 transition-colors shadow-2xs"
-              >
-                <UserPlus className="w-3.5 h-3.5" />
-                <span>Add Customer</span>
-              </Link>
-            )}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -246,7 +248,7 @@ export default function DashboardPage() {
                   <th className="py-3.5 px-6">Customer & Phone</th>
                   <th className="py-3.5 px-6">Status</th>
                   <th className="py-3.5 px-6">Assigned Plan</th>
-                  <th className="py-3.5 px-6">Started On</th>
+                  <th className="py-3.5 px-6">Cycle Started</th>
                   <th className="py-3.5 px-6 text-right">Quick Action</th>
                 </tr>
               </thead>
@@ -254,6 +256,7 @@ export default function DashboardPage() {
                 {filteredCustomers.map((customer) => {
                   const isActive = customer.status === 'active';
                   const isPaused = customer.status === 'paused';
+                  const hasTransferred = customer.ownershipHistory && customer.ownershipHistory.length > 1;
 
                   return (
                     <tr
@@ -264,12 +267,20 @@ export default function DashboardPage() {
                       <td className="py-4 px-6">
                         <div className="flex items-center gap-3">
                           <div className="w-9 h-9 rounded-xl bg-warm-100 text-warm-700 font-bold flex items-center justify-center text-xs group-hover:bg-terracotta-100 group-hover:text-terracotta-700 transition-colors">
-                            {customer.name.charAt(0).toUpperCase()}
+                            {customer.name ? customer.name.charAt(0).toUpperCase() : 'C'}
                           </div>
                           <div>
-                            <p className="font-bold text-warm-900 leading-tight">
-                              {customer.name}
-                            </p>
+                            <div className="flex items-center gap-1.5">
+                              <p className="font-bold text-warm-900 leading-tight">
+                                {customer.name}
+                              </p>
+                              {hasTransferred && (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                                  <ArrowRightLeft className="w-2.5 h-2.5" />
+                                  <span>Transferred</span>
+                                </span>
+                              )}
+                            </div>
                             <div className="flex items-center gap-1.5 text-xs text-warm-500 mt-0.5">
                               <Phone className="w-3 h-3" />
                               <span>{customer.phone}</span>
@@ -309,16 +320,18 @@ export default function DashboardPage() {
                         </p>
                       </td>
 
-                      {/* Started On */}
+                      {/* Cycle Started */}
                       <td className="py-4 px-6 text-xs text-warm-600">
                         <div className="flex items-center gap-1.5">
                           <Calendar className="w-3.5 h-3.5 text-warm-400" />
                           <span>
-                            {new Date(customer.subscriptionStartDate).toLocaleDateString('en-IN', {
-                              day: 'numeric',
-                              month: 'short',
-                              year: 'numeric'
-                            })}
+                            {customer.subscriptionStartDate
+                              ? new Date(customer.subscriptionStartDate).toLocaleDateString('en-IN', {
+                                  day: 'numeric',
+                                  month: 'short',
+                                  year: 'numeric'
+                                })
+                              : 'N/A'}
                           </span>
                         </div>
                       </td>
@@ -364,8 +377,15 @@ export default function DashboardPage() {
       {/* Pause/Resume Modal */}
       <PauseModal
         customer={selectedCustomer}
-        isOpen={modalOpen}
-        onClose={() => setModalOpen(false)}
+        isOpen={pauseModalOpen}
+        onClose={() => setPauseModalOpen(false)}
+        onSuccess={fetchDashboardData}
+      />
+
+      {/* Bulk Import Modal */}
+      <ImportModal
+        isOpen={importModalOpen}
+        onClose={() => setImportModalOpen(false)}
         onSuccess={fetchDashboardData}
       />
     </div>

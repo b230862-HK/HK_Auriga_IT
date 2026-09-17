@@ -2,10 +2,10 @@ import mongoose from 'mongoose';
 
 const pauseRecordSchema = new mongoose.Schema(
   {
-    customerId: {
+    subscriptionId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'Customer',
-      required: [true, 'Customer ID is required'],
+      ref: 'Subscription',
+      required: [true, 'Subscription ID is required'],
       index: true
     },
     startDate: {

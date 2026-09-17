@@ -18,21 +18,6 @@ const customerSchema = new mongoose.Schema(
       type: String,
       trim: true,
       default: ''
-    },
-    planId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Plan',
-      required: [true, 'Plan ID is required']
-    },
-    subscriptionStartDate: {
-      type: Date,
-      required: [true, 'Subscription start date is required']
-    },
-    status: {
-      type: String,
-      enum: ['active', 'paused', 'cancelled'],
-      default: 'active',
-      index: true
     }
   },
   {

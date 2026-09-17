@@ -1,3 +1,4 @@
+import { Subscription } from '../models/Subscription.js';
 import { Customer } from '../models/Customer.js';
 import { Plan } from '../models/Plan.js';
 import { PauseRecord } from '../models/PauseRecord.js';
@@ -9,7 +10,6 @@ export async function generateBillsForMonth(req, res, next) {
   try {
     const month = req.query.month || formatDateString(new Date()).slice(0, 7);
 
-    // Validate month format
     if (!/^\d{4}-\d{2}$/.test(month)) {
       return res.status(400).json({
         success: false,
@@ -19,59 +19,70 @@ export async function generateBillsForMonth(req, res, next) {
 
     const { endOfMonth } = getMonthBounds(month);
 
-    // Find all customers whose subscription started on or before the end of this month
-    const customers = await Customer.find({
-      subscriptionStartDate: { $lte: endOfMonth }
-    }).populate('planId');
+    // Find all subscriptions started on or before end of month
+    const subscriptions = await Subscription.find({
+      cycleStartDate: { $lte: endOfMonth }
+    })
+      .populate('planId')
+      .populate('currentCustomerId')
+      .populate('ownershipHistory.customerId');
 
     const generatedBills = [];
     let totalBilledSum = 0;
     let totalPausedDaysSum = 0;
     let totalBillableDaysSum = 0;
 
-    for (const customer of customers) {
-      if (!customer.planId) continue;
+    for (const sub of subscriptions) {
+      if (!sub.planId) continue;
 
-      // Get customer's pause records
-      const pauseRecords = await PauseRecord.find({ customerId: customer._id });
+      const pauseRecords = await PauseRecord.find({ subscriptionId: sub._id });
 
-      // Run pure billing calculation
       const calculation = calculateBill({
-        customer,
-        plan: customer.planId,
+        subscription: sub,
+        plan: sub.planId,
         pauseRecords,
         monthStr: month
       });
 
-      // Upsert into Bill collection
-      const billDoc = await Bill.findOneAndUpdate(
-        { customerId: customer._id, month },
-        {
-          customerId: customer._id,
-          month,
-          totalWeekdays: calculation.totalWeekdays,
-          pausedWeekdays: calculation.pausedWeekdays,
-          billableDays: calculation.billableDays,
-          dailyRate: calculation.dailyRate,
-          finalAmount: calculation.finalAmount,
-          generatedAt: new Date(),
-          details: calculation.details
-        },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
-      ).populate({
-        path: 'customerId',
-        populate: { path: 'planId' }
-      });
+      // calculation.customerBills handles single and multi-owner transfers cleanly
+      for (const custBill of calculation.customerBills) {
+        const billDoc = await Bill.findOneAndUpdate(
+          {
+            subscriptionId: sub._id,
+            customerId: custBill.customerId,
+            month
+          },
+          {
+            subscriptionId: sub._id,
+            customerId: custBill.customerId,
+            month,
+            totalWeekdays: custBill.totalWeekdays,
+            pausedWeekdays: custBill.pausedWeekdays,
+            billableDays: custBill.billableDays,
+            dailyRate: custBill.dailyRate,
+            finalAmount: custBill.finalAmount,
+            isTransferred: custBill.isTransferred,
+            generatedAt: new Date(),
+            details: custBill.details
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true }
+        )
+          .populate('customerId')
+          .populate({
+            path: 'subscriptionId',
+            populate: { path: 'planId' }
+          });
 
-      generatedBills.push(billDoc);
-      totalBilledSum += calculation.finalAmount;
-      totalPausedDaysSum += calculation.pausedWeekdays;
-      totalBillableDaysSum += calculation.billableDays;
+        generatedBills.push(billDoc);
+        totalBilledSum += custBill.finalAmount;
+        totalPausedDaysSum += custBill.pausedWeekdays;
+        totalBillableDaysSum += custBill.billableDays;
+      }
     }
 
     res.json({
       success: true,
-      message: `Generated pro-rated bills for ${generatedBills.length} customer(s) for ${month}`,
+      message: `Generated pro-rated bills for ${generatedBills.length} line item(s) for ${month}`,
       month,
       summary: {
         customerCount: generatedBills.length,
@@ -98,42 +109,53 @@ export async function getCustomerBill(req, res, next) {
       });
     }
 
-    const customer = await Customer.findById(customerId).populate('planId');
-    if (!customer) {
-      return res.status(404).json({
-        success: false,
-        error: 'Customer not found.'
+    // Attempt finding existing stored bill by customerId or subscriptionId
+    let bill = await Bill.findOne({
+      $or: [{ customerId }, { subscriptionId: customerId }],
+      month
+    })
+      .populate('customerId')
+      .populate({
+        path: 'subscriptionId',
+        populate: { path: 'planId' }
       });
-    }
 
-    // Try finding existing stored bill
-    let bill = await Bill.findOne({ customerId, month }).populate({
-      path: 'customerId',
-      populate: { path: 'planId' }
-    });
-
-    // If not already computed or if real-time calculation requested, compute fresh
     if (!bill) {
-      const pauseRecords = await PauseRecord.find({ customerId: customer._id });
-      const calculation = calculateBill({
-        customer,
-        plan: customer.planId,
-        pauseRecords,
-        monthStr: month
-      });
+      // Real-time calculation fallback
+      const subscription = await Subscription.findOne({
+        $or: [{ currentCustomerId: customerId }, { _id: customerId }, { 'ownershipHistory.customerId': customerId }]
+      }).populate('planId');
 
-      bill = {
-        customerId: customer,
-        month,
-        totalWeekdays: calculation.totalWeekdays,
-        pausedWeekdays: calculation.pausedWeekdays,
-        billableDays: calculation.billableDays,
-        dailyRate: calculation.dailyRate,
-        finalAmount: calculation.finalAmount,
-        generatedAt: new Date(),
-        details: calculation.details,
-        isComputedLive: true
-      };
+      if (subscription) {
+        const pauseRecords = await PauseRecord.find({ subscriptionId: subscription._id });
+        const calculation = calculateBill({
+          subscription,
+          plan: subscription.planId,
+          pauseRecords,
+          monthStr: month
+        });
+
+        const targetBill =
+          calculation.customerBills.find((b) => String(b.customerId) === String(customerId)) ||
+          calculation.customerBills[0];
+
+        if (targetBill) {
+          bill = {
+            subscriptionId: subscription,
+            customerId: await Customer.findById(targetBill.customerId),
+            month,
+            totalWeekdays: targetBill.totalWeekdays,
+            pausedWeekdays: targetBill.pausedWeekdays,
+            billableDays: targetBill.billableDays,
+            dailyRate: targetBill.dailyRate,
+            finalAmount: targetBill.finalAmount,
+            isTransferred: targetBill.isTransferred,
+            generatedAt: new Date(),
+            details: targetBill.details,
+            isComputedLive: true
+          };
+        }
+      }
     }
 
     res.json({
@@ -157,8 +179,9 @@ export async function getMonthlyBillsList(req, res, next) {
     }
 
     const bills = await Bill.find({ month })
+      .populate('customerId')
       .populate({
-        path: 'customerId',
+        path: 'subscriptionId',
         populate: { path: 'planId' }
       })
       .sort({ createdAt: -1 });

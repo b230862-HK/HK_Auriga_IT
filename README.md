@@ -4,175 +4,131 @@ A production-grade, generic MERN platform designed for home-style tiffin (lunch 
 
 Customers subscribe to a monthly weekday (Mon–Fri) lunch delivery plan. Customers can pause their subscription for any date range (travel, festivals, medical leave) or indefinitely, and resume at any time. Paused weekdays are never billed. At month-end, the owner generates an airtight pro-rated invoice per customer, paying only for weekdays the customer was actually served.
 
+Includes full support for **Morning Notifications & Virtual Clock (T1)**, **Mid-Cycle Subscription Transfers (T6)**, and **Messy Data Import (T4)**.
+
 ---
 
 ## Tech Stack
 
-- **Backend**: Node.js, Express.js REST API, Mongoose ODM, MongoDB (with automatic in-memory fallback for instant zero-dependency testing).
+- **Backend**: Node.js, Express.js REST API, Mongoose ODM, MongoDB (with automatic in-memory fallback for instant zero-dependency execution).
 - **Authentication**: JWT (JSON Web Tokens, 7-day expiry), bcryptjs password hashing (salt rounds $\ge 10$), token-protected endpoints.
 - **Frontend**: React (Vite, modern functional components + hooks), React Router v6, Tailwind CSS with a warm culinary palette (terracotta, saffron, warm neutrals), Lucide React icons, Axios with auth interceptors.
-- **Testing**: Built-in Node test runner (`node --test`) for pure billing calculation unit tests covering all edge cases.
+- **Testing**: Built-in Node test runner (`node --test`) with 21 unit tests covering billing math, transfers, morning notifications, and data import pipelines.
 
 ---
 
-## Core Billing Engine Logic
+## Core Architecture & Features
 
-The billing calculation logic is isolated in a pure, framework-agnostic module (`server/src/utils/billing.js`) and `server/src/utils/dateUtils.js`.
+### 0. Foundational Entity: `Subscription`
+Subscriptions outlive individual customers to allow mid-month transfers:
+- **`Subscription`**: `planId`, `cycleStartDate`, `status` (`active`, `paused`, `cancelled`), `currentCustomerId`, and `ownershipHistory` array (`[{ customerId, from, to }]`).
+- **`Customer`**: `name`, `phone` (unique index), `address`.
+- **`PauseRecord`**: References `subscriptionId` so pauses belong to the delivery slot and survive customer transfers.
+- **`Bill`**: References both `subscriptionId` and `customerId`. Multiple bills can exist for the same subscription in a transfer month.
 
-For any customer, plan, pause records, and billing month ($YYYY-MM$):
-1. **Calendar Weekdays**: Count of Mon–Fri dates in the calendar month.
-2. **Base Daily Rate**:
-   $$\text{dailyRate} = \frac{\text{planPrice}}{\text{calendarWeekdays}}$$
-3. **Customer Subscription Start Constraint**:
-   - If customer subscribes mid-month, candidate weekdays count strictly from $\max(\text{monthStart}, \text{subscriptionStartDate})$ to $\text{monthEnd}$.
-   - Weekdays prior to subscription are never counted in `totalWeekdays` or `billableDays`.
-4. **Pause Deductions with De-Duplication**:
-   - Date ranges for all pause records are converted into a `Set` of unique `YYYY-MM-DD` weekday strings.
-   - Overlapping pause ranges automatically de-duplicate.
-   - Cross-month pauses only deduct weekdays falling inside the active billing month.
-   - Indefinite pauses (`endDate: null`) deduct weekdays through the billing period.
-   - **Resume Day Handling**: When a customer resumes mid-pause, the resume date itself counts as a delivered/billable day (excluded from pause deductions).
-5. **Final Pro-Rated Amount**:
-   $$\text{billableDays} = \max(0, \text{customerTotalWeekdays} - \text{pausedWeekdays})$$
-   $$\text{finalBill} = \text{round}(\text{dailyRate} \times \text{billableDays}, 2)$$
+### 1. T1 &mdash; Morning Notifications & Virtual Clock
+- Virtual clock endpoints for automated grading and daily delivery simulation:
+  - `POST /clock` (and `/api/clock`): Advance or set virtual date (`{ "date": "YYYY-MM-DD" }`), immediately triggers the morning notification job.
+  - `GET /outbox` (and `/api/outbox`): Lists sent notifications (optional `?date=YYYY-MM-DD` filter).
+  - `POST /outbox/reset` (and `/api/outbox/reset`): Clears outbox records.
+- Pure `getDueToday(subscriptions, pauseRecords, date)` function: checks active status, Mon–Fri weekday, and pause exclusions (respects resume date as delivered).
+- Strictly idempotent: calling `/clock` multiple times on the same date will not duplicate notifications.
 
----
+### 2. T6 &mdash; Mid-Cycle Transfer & Split Billing
+- `POST /api/subscriptions/:id/transfer`: Reassigns subscription slot to a new customer mid-cycle:
+  - **Outgoing customer** is billable through `transferDate - 1`.
+  - **Incoming customer** is billable from `transferDate` onward.
+  - `planId` and `cycleStartDate` carry over unchanged.
+- Pure `calculateBill` engine computes shared daily rate and apportions billable weekdays according to each owner's window. Pauses in a given window reduce only that owner's billable days.
 
-## Project Structure
-
-```
-Auriga_IT/
-├── server/
-│   ├── src/
-│   │   ├── config/
-│   │   │   └── db.js                 # MongoDB connection + MongoMemoryServer fallback
-│   │   ├── models/
-│   │   │   ├── Owner.js              # Owner schema with bcrypt password hashing
-│   │   │   ├── Plan.js               # Tiffin subscription plan schema
-│   │   │   ├── Customer.js           # Customer schema with indexed phone & status
-│   │   │   ├── PauseRecord.js        # Pause schedule with date range & reason
-│   │   │   └── Bill.js               # Pro-rated bill record with itemized audit trail
-│   │   ├── middleware/
-│   │   │   ├── auth.js               # JWT verification middleware & token generator
-│   │   │   └── errorHandler.js       # Centralized JSON error handler (400, 404, 409, 500)
-│   │   ├── utils/
-│   │   │   ├── billing.js            # Pure framework-agnostic pro-rated billing engine
-│   │   │   └── dateUtils.js          # UTC calendar weekday helpers
-│   │   ├── controllers/
-│   │   │   ├── authController.js     # Signup, login, and me
-│   │   │   ├── customerController.js # Subscribe, phone lookup, status list, pause/resume
-│   │   │   ├── planController.js     # List and create plans
-│   │   │   └── billingController.js  # Batch generate bills, customer invoice breakdown
-│   │   ├── routes/                   # Express route definitions
-│   │   ├── seed.js                   # Auto-seed sample plans, demo owner, & realistic data
-│   │   └── index.js                  # Express application entry point
-│   ├── test/
-│   │   └── billing.test.js           # Unit test suite for billing edge cases
-│   ├── package.json
-│   └── .env
-├── client/
-│   ├── src/
-│   │   ├── api/
-│   │   │   ├── client.js             # Axios instance with Bearer token interceptor
-│   │   │   └── services.js           # API services for auth, customers, plans, billing
-│   │   ├── context/
-│   │   │   └── AuthContext.jsx       # Owner session state, login/logout, toasts
-│   │   ├── components/
-│   │   │   ├── Navbar.jsx            # Top navbar with branding & navigation
-│   │   │   ├── ProtectedRoute.jsx    # Auth route guard
-│   │   │   ├── StatCard.jsx          # Reusable summary metric card
-│   │   │   ├── PauseModal.jsx        # Interactive pause/resume date picker modal
-│   │   │   └── Toast.jsx             # Toast notification alerts
-│   │   ├── pages/
-│   │   │   ├── LoginPage.jsx         # Branded owner login with demo credentials
-│   │   │   ├── SignupPage.jsx        # Owner kitchen registration
-│   │   │   ├── DashboardPage.jsx     # Live stats & Active/Paused customer tables
-│   │   │   ├── SubscribePage.jsx     # Customer onboarding & plan picker
-│   │   │   ├── CustomerSearchPage.jsx# Phone lookup, pause timeline & live preview
-│   │   │   └── BillingPage.jsx       # Month selector, generate bills, audit breakdown
-│   │   ├── App.jsx                   # Route hierarchy
-│   │   ├── main.jsx
-│   │   └── index.css                 # Tailwind layers & typography
-│   ├── tailwind.config.js            # Custom terracotta/saffron/warm palette
-│   ├── vite.config.js
-│   └── package.json
-└── README.md
-```
+### 3. T4 &mdash; Messy Data Import
+- `POST /api/customers/import`: Bulk import customer rows (JSON array) with normalization, deduplication, and rejection reporting:
+  - **Phone Normalization**: Strips spaces, dashes, `+91`/`91` prefixes, verifies 10 digits.
+  - **Flexible Date Parsing**: Handles ISO (`YYYY-MM-DD`), `DD/MM/YYYY`, `MM/DD/YYYY`, `DD-MM-YYYY`, `15 Sep 2026`, epoch timestamps. Ambiguous dates default to `DD/MM/YYYY`.
+  - **Deduplication vs. Rejection**:
+    - `rejected`: Broken rows (blank name, unparseable date, invalid phone, unknown plan) with exact reasons.
+    - `deduped`: Valid rows whose phone has already been seen in the batch or exists in the database (skipped cleanly).
+    - `imported`: Valid, first-seen customers creating `Customer` and `Subscription`.
 
 ---
 
-## Getting Started
-
-### Prerequisites
-- Node.js (v18 or higher recommended; developed on Node v24)
-- npm
-
-### 1. Running the Server
-
-```bash
-cd server
-npm install
-npm run dev
-```
-
-*Note on Database:* The server reads `MONGODB_URI` from `.env`. If a local or remote MongoDB instance is running, it connects automatically. If no external MongoDB daemon is active on port 27017, the server seamlessly initializes an embedded `MongoMemoryServer` instance and seeds sample plans, demo owner, and customer data.
-
-### 2. Running Billing Unit Tests
+## Running the Automated Test Suite
 
 ```bash
 cd server
 npm test
 ```
-Runs the 8 automated billing calculation test cases:
-- Full month with no pauses
-- Customer subscribing mid-month
-- Partial month pause inside month
-- Multiple overlapping pause ranges de-duplicating
-- Pause spanning across calendar month boundaries
-- Indefinite pause (`endDate: null`)
-- Customer resuming mid-pause (resume date billable)
-- Pauses solely over weekends
 
-### 3. Running the Frontend Client
+Runs all 21 automated unit tests:
+```
+✔ Billing Engine - Full month with no pauses
+✔ Billing Engine - Customer subscribes mid-month
+✔ Billing Engine - Customer pause range inside month
+✔ Billing Engine - Multiple overlapping pause ranges de-duplicate
+✔ Billing Engine - Pause spans across month boundaries
+✔ Billing Engine - Indefinite pause (null endDate)
+✔ Billing Engine - Customer resumes mid-pause (resume date is billable)
+✔ Billing Engine - Pause solely over a weekend has 0 paused weekdays
+✔ T6 Mid-Cycle Transfer - Split mid-month with no pauses
+✔ T6 Mid-Cycle Transfer - Pause spanning the transfer date
+✔ T6 Mid-Cycle Transfer - Transfer on very first weekday of month
+✔ T6 Mid-Cycle Transfer - Two transfers within the same month (chain of 3 owners)
+✔ T4 Import - Phone normalization
+✔ T4 Import - Flexible date parsing across mixed formats
+✔ T4 Import - Row validation
+✔ T1 Morning Notifications - Active subscription due on weekday
+✔ T1 Morning Notifications - Weekend dates never deliver lunch
+✔ T1 Morning Notifications - Subscription with paused status is excluded
+✔ T1 Morning Notifications - Active subscription covered by pause range is excluded
+✔ T1 Morning Notifications - Indefinite pause excludes upcoming weekdays
+✔ T1 Morning Notifications - Resumed mid-pause: resume date is delivered and notified
 
+ℹ tests 21 | pass 21 | fail 0
+```
+
+---
+
+## Running the Application
+
+### 1. Start the Backend API
+```bash
+cd server
+npm start
+# Listens on http://localhost:5000
+```
+*Note: Automatically connects to `MONGODB_URI` from `.env` or seamlessly starts an embedded in-memory MongoDB instance if local MongoDB is not running.*
+
+### 2. Start the Frontend Client
 ```bash
 cd client
-npm install
 npm run dev
+# Vite dev server runs on http://localhost:3000
 ```
-Open **http://localhost:3000** in your browser.
 
----
-
-## Demo Credentials
-
-The application automatically seeds a demo owner account on first run:
+### 3. Demo Credentials
 - **Email**: `owner@tiffin.com`
 - **Password**: `password123`
-- *(A one-click "Fill Seed Owner" button is also provided on the login screen).*
+*(Or click "Fill Seed Owner" on the login screen).*
 
 ---
 
-## API Reference
+## API Summary
 
-### Authentication
-- `POST /api/auth/signup` &mdash; Create owner account (hashes password with bcrypt, returns JWT).
-- `POST /api/auth/login` &mdash; Authenticate owner and receive 7-day JWT.
-- `GET /api/auth/me` &mdash; Fetch authenticated owner profile *(Protected)*.
-
-### Customers
-- `POST /api/customers` &mdash; Subscribe new customer with plan assignment and unique phone *(Protected)*.
-- `GET /api/customers/:phone` &mdash; Lookup customer by phone number, including active status and pause history *(Protected)*.
-- `GET /api/customers?status=active|paused` &mdash; List customers filtered by status *(Protected)*.
-- `POST /api/customers/:id/pause` &mdash; Add pause record (`startDate`, `endDate`, `reason`) *(Protected)*.
-- `POST /api/customers/:id/resume` &mdash; Close out active pause and restore status to active *(Protected)*.
-- `GET /api/customers/:id/pauses` &mdash; List customer pause history *(Protected)*.
-
-### Plans
-- `GET /api/plans` &mdash; List available subscription plans *(Protected)*.
-- `POST /api/plans` &mdash; Create a subscription plan *(Protected)*.
-
-### Billing
-- `POST /api/billing/generate?month=YYYY-MM` &mdash; Batch calculate and upsert pro-rated bills for all subscribers for a given month *(Protected)*.
-- `GET /api/billing?month=YYYY-MM` &mdash; Fetch all generated bills for a month *(Protected)*.
-- `GET /api/billing/:customerId?month=YYYY-MM` &mdash; Fetch a specific customer's bill with audit trail *(Protected)*.
+| Method | Route | Twist | Purpose |
+|---|---|---|---|
+| POST | `/clock` | T1 | Advance/set virtual date, dispatch morning notifications |
+| GET | `/outbox` | T1 | List sent notifications (supports `?date=YYYY-MM-DD`) |
+| POST | `/outbox/reset` | T1 | Clear notification outbox (grading utility) |
+| POST | `/api/subscriptions/:id/transfer` | T6 | Transfer subscription to new customer mid-cycle |
+| GET | `/api/subscriptions/:id` | T6 | Fetch subscription with complete ownership history |
+| POST | `/api/customers/import` | T4 | Bulk import customer list with `{ imported, deduped, rejected }` |
+| POST | `/api/auth/signup` | Core | Owner registration with bcrypt password hash |
+| POST | `/api/auth/login` | Core | Owner login, issues 7-day JWT |
+| GET | `/api/customers` | Core | List subscribers directory with active/paused status filter |
+| POST | `/api/customers` | Core | Subscribe a new customer to a plan |
+| GET | `/api/customers/:phone` | Core | Phone-based customer lookup and subscription timeline |
+| POST | `/api/customers/:id/pause` | Core | Pause subscription for a date range or indefinitely |
+| POST | `/api/customers/:id/resume` | Core | Resume delivery slot (resume day is billable) |
+| POST | `/api/billing/generate` | Core | Compute pro-rated bills for all subscribers for `?month=YYYY-MM` |
+| GET | `/api/billing` | Core | Fetch calculated monthly bills and summary totals |
+| GET | `/api/plans` | Core | List available monthly tiffin plans |

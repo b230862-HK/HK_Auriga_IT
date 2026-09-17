@@ -1,16 +1,15 @@
 import { Customer } from '../models/Customer.js';
+import { Subscription } from '../models/Subscription.js';
 import { Plan } from '../models/Plan.js';
 import { PauseRecord } from '../models/PauseRecord.js';
 import { parseDateOnly, formatDateString } from '../utils/dateUtils.js';
+import { normalizePhone as cleanPhoneUtil, validateRow } from '../utils/importUtils.js';
 
-// Normalize phone numbers (strip spaces, hyphens, parentheses)
 export function normalizePhone(rawPhone) {
-  if (!rawPhone) return '';
-  return rawPhone.replace(/[\s\-()]/g, '');
+  return cleanPhoneUtil(rawPhone) || (rawPhone ? String(rawPhone).replace(/[\s\-()]/g, '') : '');
 }
 
 export function isValidPhone(phone) {
-  // Accepts standard 10-15 digit phone numbers with optional leading +
   return /^\+?[0-9]{7,15}$/.test(phone);
 }
 
@@ -26,20 +25,34 @@ export async function createCustomer(req, res, next) {
     }
 
     const cleanPhone = normalizePhone(phone);
-    if (!isValidPhone(cleanPhone)) {
+    if (!cleanPhone || cleanPhone.length < 10) {
       return res.status(400).json({
         success: false,
-        error: 'Please enter a valid phone number (7-15 digits, optional + prefix).'
+        error: 'Please enter a valid phone number with at least 10 digits.'
       });
     }
 
     // Check phone uniqueness
-    const existing = await Customer.findOne({ phone: cleanPhone });
-    if (existing) {
-      return res.status(409).json({
-        success: false,
-        error: `A customer with phone number "${cleanPhone}" is already subscribed.`
+    let customer = await Customer.findOne({ phone: cleanPhone });
+    if (customer) {
+      // Check if customer already has an active or paused subscription
+      const existingSub = await Subscription.findOne({
+        currentCustomerId: customer._id,
+        status: { $in: ['active', 'paused'] }
       });
+      if (existingSub) {
+        return res.status(409).json({
+          success: false,
+          error: `A customer with phone number "${cleanPhone}" is already actively subscribed.`
+        });
+      }
+    } else {
+      customer = new Customer({
+        name: name.trim(),
+        phone: cleanPhone,
+        address: address ? address.trim() : ''
+      });
+      await customer.save();
     }
 
     // Verify plan exists
@@ -53,22 +66,35 @@ export async function createCustomer(req, res, next) {
 
     const startDate = subscriptionStartDate ? parseDateOnly(subscriptionStartDate) : parseDateOnly(new Date());
 
-    const customer = new Customer({
-      name: name.trim(),
-      phone: cleanPhone,
-      address: address ? address.trim() : '',
+    const subscription = new Subscription({
       planId,
-      subscriptionStartDate: startDate,
-      status: 'active'
+      cycleStartDate: startDate,
+      status: 'active',
+      currentCustomerId: customer._id,
+      ownershipHistory: [
+        {
+          customerId: customer._id,
+          from: startDate,
+          to: null
+        }
+      ]
     });
 
-    await customer.save();
-    await customer.populate('planId');
+    await subscription.save();
+    await subscription.populate('planId');
+
+    // Return combined customer representation for UI
+    const customerObj = customer.toObject();
+    customerObj.planId = plan;
+    customerObj.subscriptionStartDate = startDate;
+    customerObj.status = 'active';
+    customerObj.subscriptionId = subscription._id;
 
     res.status(201).json({
       success: true,
       message: 'Customer subscribed successfully',
-      customer
+      customer: customerObj,
+      subscription
     });
   } catch (err) {
     next(err);
@@ -82,7 +108,7 @@ export async function getCustomerByPhone(req, res, next) {
 
     const customer = await Customer.findOne({
       $or: [{ phone: cleanPhone }, { phone: rawPhone }]
-    }).populate('planId');
+    });
 
     if (!customer) {
       return res.status(404).json({
@@ -91,24 +117,48 @@ export async function getCustomerByPhone(req, res, next) {
       });
     }
 
-    // Also fetch their pause history
-    const pauses = await PauseRecord.find({ customerId: customer._id }).sort({ startDate: -1 });
+    // Find subscription where this customer is current owner (or historical owner)
+    let subscription = await Subscription.findOne({ currentCustomerId: customer._id })
+      .populate('planId')
+      .populate('currentCustomerId')
+      .populate('ownershipHistory.customerId');
 
-    // Identify if there is an ongoing pause
-    const today = parseDateOnly(new Date());
-    const activePause = pauses.find((p) => {
-      const start = parseDateOnly(p.startDate);
-      const end = p.endDate ? parseDateOnly(p.endDate) : null;
-      if (p.isResumed) return false;
-      if (end) {
-        return start <= today && end >= today;
-      }
-      return start <= today; // ongoing indefinite
-    });
+    if (!subscription) {
+      subscription = await Subscription.findOne({ 'ownershipHistory.customerId': customer._id })
+        .populate('planId')
+        .populate('currentCustomerId')
+        .populate('ownershipHistory.customerId');
+    }
+
+    let pauses = [];
+    let activePause = null;
+
+    if (subscription) {
+      pauses = await PauseRecord.find({ subscriptionId: subscription._id }).sort({ startDate: -1 });
+
+      const today = parseDateOnly(new Date());
+      activePause = pauses.find((p) => {
+        const start = parseDateOnly(p.startDate);
+        const end = p.endDate ? parseDateOnly(p.endDate) : null;
+        if (p.isResumed) return false;
+        if (end) return start <= today && end >= today;
+        return start <= today;
+      });
+    }
+
+    const customerObj = customer.toObject();
+    if (subscription) {
+      customerObj.planId = subscription.planId;
+      customerObj.subscriptionStartDate = subscription.cycleStartDate;
+      customerObj.status = subscription.status;
+      customerObj.subscriptionId = subscription._id;
+      customerObj.ownershipHistory = subscription.ownershipHistory;
+    }
 
     res.json({
       success: true,
-      customer,
+      customer: customerObj,
+      subscription,
       activePause: activePause || null,
       pauses
     });
@@ -120,31 +170,47 @@ export async function getCustomerByPhone(req, res, next) {
 export async function listCustomers(req, res, next) {
   try {
     const { status, search } = req.query;
-    const filter = {};
 
+    const subFilter = {};
     if (status && ['active', 'paused', 'cancelled'].includes(status)) {
-      filter.status = status;
+      subFilter.status = status;
     }
+
+    // Fetch subscriptions with current customer and plan
+    const subscriptions = await Subscription.find(subFilter)
+      .populate('planId')
+      .populate('currentCustomerId')
+      .sort({ createdAt: -1 });
+
+    const [activeCount, pausedCount, cancelledCount, totalCount] = await Promise.all([
+      Subscription.countDocuments({ status: 'active' }),
+      Subscription.countDocuments({ status: 'paused' }),
+      Subscription.countDocuments({ status: 'cancelled' }),
+      Subscription.countDocuments()
+    ]);
+
+    // Shape into combined customer objects for frontend tables
+    let customersList = subscriptions.map((sub) => {
+      const cust = sub.currentCustomerId ? sub.currentCustomerId.toObject() : {};
+      return {
+        ...cust,
+        _id: cust._id || sub._id,
+        subscriptionId: sub._id,
+        planId: sub.planId,
+        subscriptionStartDate: sub.cycleStartDate,
+        status: sub.status,
+        ownershipHistory: sub.ownershipHistory
+      };
+    });
 
     if (search) {
       const cleanSearch = normalizePhone(search);
-      filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { phone: { $regex: cleanSearch || search, $options: 'i' } }
-      ];
+      customersList = customersList.filter(
+        (c) =>
+          (c.name && c.name.toLowerCase().includes(search.toLowerCase())) ||
+          (c.phone && c.phone.includes(cleanSearch || search))
+      );
     }
-
-    const customers = await Customer.find(filter)
-      .populate('planId')
-      .sort({ createdAt: -1 });
-
-    // Count statistics for the dashboard
-    const [activeCount, pausedCount, cancelledCount, totalCount] = await Promise.all([
-      Customer.countDocuments({ status: 'active' }),
-      Customer.countDocuments({ status: 'paused' }),
-      Customer.countDocuments({ status: 'cancelled' }),
-      Customer.countDocuments()
-    ]);
 
     res.json({
       success: true,
@@ -154,7 +220,7 @@ export async function listCustomers(req, res, next) {
         cancelled: cancelledCount,
         total: totalCount
       },
-      customers
+      customers: customersList
     });
   } catch (err) {
     next(err);
@@ -166,11 +232,16 @@ export async function pauseCustomer(req, res, next) {
     const { id } = req.params;
     const { startDate, endDate, reason } = req.body;
 
-    const customer = await Customer.findById(id);
-    if (!customer) {
+    // Check if id is a Subscription ID or Customer ID
+    let subscription = await Subscription.findById(id);
+    if (!subscription) {
+      subscription = await Subscription.findOne({ currentCustomerId: id, status: { $in: ['active', 'paused'] } });
+    }
+
+    if (!subscription) {
       return res.status(404).json({
         success: false,
-        error: 'Customer not found.'
+        error: 'Active subscription not found.'
       });
     }
 
@@ -191,22 +262,8 @@ export async function pauseCustomer(req, res, next) {
       });
     }
 
-    // Check if customer already has an active ongoing indefinite pause
-    const ongoingPause = await PauseRecord.findOne({
-      customerId: customer._id,
-      isResumed: false,
-      endDate: null
-    });
-
-    if (ongoingPause) {
-      return res.status(400).json({
-        success: false,
-        error: 'Customer already has an active indefinite pause. Please resume it first.'
-      });
-    }
-
     const pauseRecord = new PauseRecord({
-      customerId: customer._id,
+      subscriptionId: subscription._id,
       startDate: parsedStart,
       endDate: parsedEnd,
       reason: reason ? reason.trim() : ''
@@ -214,23 +271,16 @@ export async function pauseCustomer(req, res, next) {
 
     await pauseRecord.save();
 
-    // If pause includes today or starts today/past, update customer status to paused
     const today = parseDateOnly(new Date());
     if (parsedStart <= today && (!parsedEnd || parsedEnd >= today)) {
-      customer.status = 'paused';
-      await customer.save();
-    } else if (customer.status !== 'paused') {
-      // If scheduled starting today, mark as paused
-      if (formatDateString(parsedStart) === formatDateString(today)) {
-        customer.status = 'paused';
-        await customer.save();
-      }
+      subscription.status = 'paused';
+      await subscription.save();
     }
 
     res.status(201).json({
       success: true,
       message: 'Subscription paused successfully',
-      customer,
+      subscription,
       pauseRecord
     });
   } catch (err) {
@@ -242,19 +292,21 @@ export async function resumeCustomer(req, res, next) {
   try {
     const { id } = req.params;
 
-    const customer = await Customer.findById(id);
-    if (!customer) {
+    let subscription = await Subscription.findById(id);
+    if (!subscription) {
+      subscription = await Subscription.findOne({ currentCustomerId: id, status: 'paused' });
+    }
+
+    if (!subscription) {
       return res.status(404).json({
         success: false,
-        error: 'Customer not found.'
+        error: 'Paused subscription not found.'
       });
     }
 
     const today = parseDateOnly(new Date());
-
-    // Find the latest open or ongoing pause record
     const activePause = await PauseRecord.findOne({
-      customerId: customer._id,
+      subscriptionId: subscription._id,
       isResumed: false,
       $or: [{ endDate: null }, { endDate: { $gte: today } }]
     }).sort({ startDate: -1 });
@@ -262,19 +314,17 @@ export async function resumeCustomer(req, res, next) {
     if (activePause) {
       activePause.isResumed = true;
       activePause.resumedAt = today;
-      // Per specification: close out an active/open-ended pause (set endDate = today, flip status back to active)
-      // and resume date itself counts as a delivered/billable day.
       activePause.endDate = today;
       await activePause.save();
     }
 
-    customer.status = 'active';
-    await customer.save();
+    subscription.status = 'active';
+    await subscription.save();
 
     res.json({
       success: true,
-      message: 'Subscription resumed successfully. Customer is now active.',
-      customer,
+      message: 'Subscription resumed successfully',
+      subscription,
       pauseRecord: activePause || null
     });
   } catch (err) {
@@ -285,10 +335,110 @@ export async function resumeCustomer(req, res, next) {
 export async function getCustomerPauses(req, res, next) {
   try {
     const { id } = req.params;
-    const pauses = await PauseRecord.find({ customerId: id }).sort({ startDate: -1 });
+    let subscription = await Subscription.findById(id);
+    if (!subscription) {
+      subscription = await Subscription.findOne({ currentCustomerId: id });
+    }
+
+    const subId = subscription ? subscription._id : id;
+    const pauses = await PauseRecord.find({ subscriptionId: subId }).sort({ startDate: -1 });
+
     res.json({
       success: true,
       pauses
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * T4 Messy Data Import Endpoint
+ * Accepts: JSON array of raw customer rows
+ * Returns: { imported, deduped, rejected }
+ */
+export async function importCustomers(req, res, next) {
+  try {
+    const rawRows = Array.isArray(req.body) ? req.body : req.body?.rows || req.body?.customers;
+
+    if (!rawRows || !Array.isArray(rawRows)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Expected a JSON array of customer rows.'
+      });
+    }
+
+    // 1. Build plan lookup map (by lowercase name and by _id)
+    const plans = await Plan.find();
+    const planLookup = new Map();
+    for (const p of plans) {
+      planLookup.set(p.name.toLowerCase().trim(), p);
+      planLookup.set(String(p._id), p);
+    }
+
+    // 2. Fetch existing customer phones from database
+    const existingCustomers = await Customer.find({}, { phone: 1 });
+    const existingDbPhones = new Set(existingCustomers.map((c) => c.phone));
+
+    const seenInBatchPhones = new Set();
+    const rejected = [];
+    let imported = 0;
+    let deduped = 0;
+
+    for (const rawRow of rawRows) {
+      const validation = validateRow(rawRow, planLookup);
+
+      if (!validation.valid) {
+        rejected.push({
+          row: rawRow,
+          reason: validation.reason
+        });
+        continue;
+      }
+
+      const cleanRow = validation.cleanRow;
+
+      // Check deduplication (both in-batch and pre-existing in DB)
+      if (seenInBatchPhones.has(cleanRow.phone) || existingDbPhones.has(cleanRow.phone)) {
+        deduped++;
+        continue;
+      }
+
+      // Mark as seen in this batch
+      seenInBatchPhones.add(cleanRow.phone);
+      existingDbPhones.add(cleanRow.phone);
+
+      // Create Customer and Subscription
+      const customer = new Customer({
+        name: cleanRow.name,
+        phone: cleanRow.phone,
+        address: cleanRow.address
+      });
+      await customer.save();
+
+      const startDate = parseDateOnly(cleanRow.startDate);
+      const subscription = new Subscription({
+        planId: cleanRow.planId,
+        cycleStartDate: startDate,
+        status: 'active',
+        currentCustomerId: customer._id,
+        ownershipHistory: [
+          {
+            customerId: customer._id,
+            from: startDate,
+            to: null
+          }
+        ]
+      });
+      await subscription.save();
+
+      imported++;
+    }
+
+    res.json({
+      imported,
+      deduped,
+      rejected
     });
   } catch (err) {
     next(err);
